@@ -1,0 +1,271 @@
+# Little GitHub Action script to automatize kext and OC management
+# If you follow DRY princip, please do not look at this :) 
+name: Build and Push OpenCore + Kexts
+
+on:
+  schedule:
+    - cron: "1 */8 * * *"
+
+jobs:
+  OpenCore:
+    runs-on: macos-10.15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Checkout OC repo
+        uses: actions/checkout@v2
+        with:
+          repository: acidanthera/OpenCorePkg
+          path: OpenCorePkg
+
+      - name: Check version
+        run: |
+          cd OpenCorePkg
+          LATEST_COMMIT=$(git log --format="%H" -n 1)
+          cd ..
+          CURRENT_COMMIT=$(cat .github/.versions/opencore.ver)
+          if [ "${LATEST_COMMIT}" == "${CURRENT_COMMIT}" ]; then  
+            echo "::set-env name=OC_STOP::1" 
+          else 
+            echo "${LATEST_COMMIT}" > .github/.versions/opencore.ver 
+            echo "::set-env name=OC_STOP::2" 
+          fi
+
+      - name: Prepare Env
+        run: |
+          
+          if [ "${OC_STOP}" != 1 ]; then
+            git config --global user.email "vojta.jungmann@gmail.com"
+            git config --global user.name "OC-Robot"
+
+            HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_AUTO_UPDATE=1 brew install nasm mingw-w64
+
+            rm -rf nasm-mac64.zip
+            curl -OL "https://github.com/acidanthera/ocbuild/raw/master/external/nasm-mac64.zip" || exit 1
+            nasmzip=$(cat nasm-mac64.zip)
+            rm -rf nasm-*
+            curl -OL "https://github.com/acidanthera/ocbuild/raw/master/external/${nasmzip}" || exit 1
+            unzip -q "${nasmzip}" nasm*/nasm nasm*/ndisasm || exit 1
+            sudo mkdir -p /usr/local/bin || exit 1
+            sudo mv nasm*/nasm /usr/local/bin/ || exit 1
+            sudo mv nasm*/ndisasm /usr/local/bin/ || exit 1
+            rm -rf "${nasmzip}" nasm-*
+
+            rm -f mtoc mtoc-mac64.zip
+            curl -OL "https://github.com/acidanthera/ocbuild/raw/master/external/mtoc-mac64.zip" || exit 1
+            mtoczip=$(cat mtoc-mac64.zip)
+            rm -rf mtoc-*
+            curl -OL "https://github.com/acidanthera/ocbuild/raw/master/external/${mtoczip}" || exit 1
+            unzip -q "${mtoczip}" mtoc || exit 1
+            sudo mkdir -p /usr/local/bin || exit 1
+            sudo rm -f /usr/local/bin/mtoc /usr/local/bin/mtoc.NEW || exit 1
+            sudo cp mtoc /usr/local/bin/mtoc || exit 1
+          fi
+
+      - name: Build OC
+        run: |
+          if [ "${OC_STOP}" != 1 ]; then
+            cd OpenCorePkg
+            ./build_oc.tool
+          fi
+
+      - name: Unzip OC
+        env:
+          OC_VERSION: 0.6.1
+        run: if [ "${OC_STOP}" != 1 ]; then unzip OpenCorePkg/Binaries/OpenCore-${OC_VERSION}-RELEASE.zip -d OpenCoreFiles; fi
+
+      - name: Change files
+        run: |
+          if [ "${OC_STOP}" != 1 ]; then
+            mv OpenCoreFiles/EFI/BOOT/BOOTx64.efi BOOT/BOOTx64.efi
+            mv OpenCoreFiles/EFI/OC/OpenCore.efi OC/OpenCore.efi
+            mv OpenCoreFiles/EFI/OC/Bootstrap/Bootstrap.efi OC/Bootstrap/Bootstrap.efi
+            mv OpenCoreFiles/EFI/OC/Drivers/AudioDxe.efi OC/Drivers/AudioDxe.efi
+            mv OpenCoreFiles/EFI/OC/Drivers/CrScreenshotDxe.efi OC/Drivers/CrScreenshotDxe.efi
+            mv OpenCoreFiles/EFI/OC/Drivers/OpenCanopy.efi OC/Drivers/OpenCanopy.efi
+            mv OpenCoreFiles/EFI/OC/Drivers/OpenRuntime.efi OC/Drivers/OpenRuntime.efi
+
+            mv OpenCoreFiles/Docs/Differences.pdf Other/OC_Differences.pdf
+          fi
+
+      - name: Git add files
+        run: |
+          if [ "${OC_STOP}" != 1 ]; then
+            git add .github/.versions/opencore.ver
+            git add BOOT/BOOTx64.efi
+            git add OC/OpenCore.efi
+            git add OC/Bootstrap/Bootstrap.efi
+            git add OC/Drivers/AudioDxe.efi
+            git add OC/Drivers/CrScreenshotDxe.efi
+            git add OC/Drivers/OpenCanopy.efi
+            git add OC/Drivers/OpenRuntime.efi
+            git add Other/OC_Differences.pdf
+          fi
+
+      - name: Git commit and push
+        run: |
+          if [ "${OC_STOP}" != 1 ]; then
+            git commit -m "Automatized OpenCore upgrade $(date '+%H:%M:%S-%d/%m/%y')"
+            push
+          fi
+
+  Kexts:
+    runs-on: macos-10.15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Checkout itlwm repo
+        uses: actions/checkout@v2
+        with:
+          repository: OpenIntelWireless/itlwm
+          path: itlwm
+
+      - name: Checkout Lilu repo
+        uses: actions/checkout@v2
+        with:
+          repository: acidanthera/Lilu
+          path: Lilu
+
+      - name: Checkout WEG repo
+        uses: actions/checkout@v2
+        with:
+          repository: acidanthera/WhateverGreen
+          path: WhateverGreen
+
+      - name: Checkout AppleALC repo
+        uses: actions/checkout@v2
+        with:
+          repository: acidanthera/AppleALC
+          path: AppleALC
+
+      - name: Checkout VirtualSMC repo
+        uses: actions/checkout@v2
+        with:
+          repository: acidanthera/VirtualSMC
+          path: VirtualSMC
+
+      - name: Prepare Env
+        run: |
+          git config --global user.email "vojta.jungmann@gmail.com"
+          git config --global user.name "Kext-Robot"
+
+      - name: Build itlwm
+        run: |
+          cd itlwm
+          LATEST_COMMIT=$(git log --format="%H" -n 1)
+          CURRENT_COMMIT=$(cat ../.github/.versions/itlwm.ver)
+          if [ "${LATEST_COMMIT}" == "${CURRENT_COMMIT}" ]; 
+            then echo "itlwm is alredy on a latest version" ; 
+          else 
+            echo "${LATEST_COMMIT}" > ../.github/.versions/itlwm.ver; 
+            echo "::set-env name=UPDATE::1"
+            export PROJECT_DIR=$(pwd)
+            bash fw_gen.sh
+            xcodebuild -scheme itlwm -configuration Release -sdk macosx10.15 -derivedDataPath build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+            
+            rm -rf ../OC/Kexts/itlwm.kext
+            cp -r build/Build/Products/Release/itlwm.kext ../OC/Kexts/
+            cd ..
+            git add OC/Kexts/itlwm.kext
+            git add .github/.versions/itlwm.ver
+          fi
+
+      - name: Build Lilu
+        run: |
+          cd Lilu
+          LATEST_COMMIT=$(git log --format="%H" -n 1)
+          CURRENT_COMMIT=$(cat ../.github/.versions/lilu.ver)
+          if [ "${LATEST_COMMIT}" == "${CURRENT_COMMIT}" ]; 
+            then echo "Lilu is alredy on a latest version" ; 
+          else 
+            echo "::set-env name=UPDATE::1"
+            echo "${LATEST_COMMIT}" > ../.github/.versions/lilu.ver; 
+            xcodebuild -scheme Lilu -configuration Debug -derivedDataPath build 
+            xcodebuild -scheme Lilu -configuration Release -derivedDataPath build
+            
+            rm -rf ../OC/Kexts/Lilu.kext
+            cp -r build/Build/Products/Release/Lilu.kext ../OC/Kexts/
+            cd ..
+            git add OC/Kexts/Lilu.kext
+            git add .github/.versions/lilu.ver
+          fi
+
+      - name: Build WEG
+        run: |
+          cd WhateverGreen
+          LATEST_COMMIT=$(git log --format="%H" -n 1)
+          CURRENT_COMMIT=$(cat ../.github/.versions/whatevergreen.ver)
+          if [ "${LATEST_COMMIT}" == "${CURRENT_COMMIT}" ]; 
+            then echo "WhateverGreen is alredy on a latest version" ; 
+          else 
+            echo "::set-env name=UPDATE::1"
+            cp -r ../Lilu/build/Build/Products/Debug/Lilu.kext Lilu.kext
+            echo "${LATEST_COMMIT}" > ../.github/.versions/whatevergreen.ver; 
+            xcodebuild -scheme WhateverGreen -configuration Release -derivedDataPath build
+            
+            rm -rf ../OC/Kexts/WhateverGreen.kext
+            cp -r build/Build/Products/Release/WhateverGreen.kext ../OC/Kexts/
+            cd ..
+            git add OC/Kexts/WhateverGreen.kext
+            git add .github/.versions/whatevergreen.ver
+          fi
+      - name: Build AppleALC
+        run: |
+          cd AppleALC
+          LATEST_COMMIT=$(git log --format="%H" -n 1)
+          CURRENT_COMMIT=$(cat ../.github/.versions/applealc.ver)
+          if [ "${LATEST_COMMIT}" == "${CURRENT_COMMIT}" ]; 
+            then echo "AppleALC is alredy on a latest version" ; 
+          else 
+            echo "::set-env name=UPDATE::1"
+            cp -r ../Lilu/build/Build/Products/Debug/Lilu.kext Lilu.kext
+            echo "${LATEST_COMMIT}" > ../.github/.versions/applealc.ver; 
+            xcodebuild -scheme AppleALC -configuration Release -derivedDataPath build
+            
+            rm -rf ../OC/Kexts/AppleALC.kext
+            cp -r build/Build/Products/Release/AppleALC.kext ../OC/Kexts/
+            cd ..
+            git add OC/Kexts/AppleALC.kext
+            git add .github/.versions/applealc.ver
+          fi
+
+      - name: Build VirtualSMC
+        run: |
+          cd VirtualSMC
+          LATEST_COMMIT=$(git log --format="%H" -n 1)
+          CURRENT_COMMIT=$(cat ../.github/.versions/virtualsmc.ver)
+          if [ "${LATEST_COMMIT}" == "${CURRENT_COMMIT}" ]; 
+            then echo "VitualSMC is alredy on a latest version" ; 
+          else 
+            echo "::set-env name=UPDATE::1"
+            cp -r ../Lilu/build/Build/Products/Debug/Lilu.kext Lilu.kext
+            echo "${LATEST_COMMIT}" > ../.github/.versions/virtualsmc.ver; 
+            xcodebuild -scheme VirtualSMC -configuration Release -derivedDataPath build
+            xcodebuild -scheme SMCSuperIO -configuration Release -derivedDataPath build
+            xcodebuild -scheme SMCBatteryManager -configuration Release -derivedDataPath build
+            xcodebuild -scheme SMCProcessor -configuration Release -derivedDataPath build
+
+            rm -rf ../OC/Kexts/VirtualSMC.kext
+            rm -rf ../OC/Kexts/SMCSuperIO.kext
+            rm -rf ../OC/Kexts/SMCBatteryManager.kext
+            rm -rf ../OC/Kexts/SMCProcessor.kext
+
+            cp -r build/Build/Products/Release/VirtualSMC.kext ../OC/Kexts/
+            cp -r build/Build/Products/Release/SMCSuperIO.kext ../OC/Kexts/
+            cp -r build/Build/Products/Release/SMCBatteryManager.kext ../OC/Kexts
+            cp -r build/Build/Products/Release/SMCProcessor.kext ../OC/Kexts/
+
+            cd ..
+            git add OC/Kexts/VirtualSMC.kext
+            git add OC/Kexts/SMCSuperIO.kext
+            git add OC/Kexts/SMCBatteryManager.kext
+            git add OC/Kexts/SMCProcessor.kext
+            git add .github/.versions/virtualsmc.ver
+
+          fi
+      - name: Commit and push changes
+        run: if [ "${UPDATE}" == 1 ]; then git commit -m "Automatized Kext upgrade $(date '+%H:%M:%S-%d/%m/%y') " && git push ; fi
